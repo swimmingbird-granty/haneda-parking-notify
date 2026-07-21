@@ -42,7 +42,7 @@ TARGET_DATES = [(7, 26), (7, 27)]
 # P3(第2ターミナル)一般車枠のカレンダーのtable id
 TABLE_ID = "cal10"
 
-DEBUG_DUMP_HTML = False  # Trueにするとカレンダーtableのinner HTMLを出力する
+DEBUG_DUMP_HTML = True  # Trueにするとカレンダーtableのinner HTMLを出力する
 
 # 空車・混雑・満車・期間外に対応するクラス名(サイトの凡例より判明済み)
 BOOKABLE_CLASSES = ["tx_ok", "tx_konzatsu"]  # 空車 or 混雑 = 予約可能

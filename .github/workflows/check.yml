@@ -1,0 +1,28 @@
+name: Check Haneda P3 Parking Availability
+
+on:
+  schedule:
+    # UTC基準。JSTの5:00-23:00の間、15分おきに実行する例(UTC 20:00-14:00)
+    # cronの書式に慣れていない場合は https://crontab.guru/ が便利です
+    - cron: "*/15 * * * *"
+  workflow_dispatch: {}  # 手動実行もできるようにしておく
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          pip install playwright
+          playwright install --with-deps chromium
+
+      - name: Run check
+        env:
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+        run: python check_availability.py

@@ -42,7 +42,7 @@ TARGET_DATES = [(7, 26), (7, 27)]
 # P3(第2ターミナル)一般車枠のカレンダーのtable id
 TABLE_ID = "cal10"
 
-DEBUG_DUMP_HTML = True  # Trueにするとカレンダーtableのinner HTMLを出力する
+DEBUG_DUMP_HTML = False  # Trueにするとカレンダーtableのinner HTMLを出力する
 
 # 空車・混雑・満車・期間外に対応するクラス名(サイトの凡例より判明済み)
 BOOKABLE_CLASSES = ["tx_ok", "tx_konzatsu"]  # 空車 or 混雑 = 予約可能
@@ -88,6 +88,20 @@ def find_day_status(page, table_id: str, day: int) -> str:
     # AJAXでの描画完了を待つ(td要素が現れるまで)
     page.wait_for_selector(f"{table_selector} td", timeout=20000)
 
+    # 日付セルはまず番号だけで描画され、空車/混雑/満車の色付け(class付与)は
+    # 少し遅れて別処理で行われるようなので、いずれかのtdにclassが付くまで待つ
+    try:
+        page.wait_for_function(
+            """(sel) => {
+                const cells = document.querySelectorAll(sel + ' td');
+                return Array.from(cells).some(td => td.className && td.className.trim() !== '');
+            }""",
+            arg=table_selector,
+            timeout=20000,
+        )
+    except Exception:
+        pass  # タイムアウトしても、この後の処理で unknown 判定になるだけなので続行する
+
     # 日にちの数字がテキストに含まれるtdを探す(前後に余分な要素があってもよいよう
     # normalize-spaceで完全一致 or 先頭一致を試す)
     cells = page.locator(f"{table_selector} td")
@@ -119,6 +133,19 @@ def main():
         browser = p.chromium.launch()
         page = browser.new_page()
         page.goto(TARGET_URL, wait_until="networkidle")
+
+        # 色付け(class付与)が非同期で遅れて行われるようなので、少し待つ
+        try:
+            page.wait_for_function(
+                """(sel) => {
+                    const cells = document.querySelectorAll(sel + ' td');
+                    return Array.from(cells).some(td => td.className && td.className.trim() !== '');
+                }""",
+                arg=f"table#{TABLE_ID}",
+                timeout=20000,
+            )
+        except Exception:
+            print("警告: classが付与されるのを待ちましたがタイムアウトしました。")
 
         if DEBUG_DUMP_HTML:
             table = page.locator(f"table#{TABLE_ID}")

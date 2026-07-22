@@ -36,8 +36,8 @@ import urllib.request
 from playwright.sync_api import sync_playwright
 
 TARGET_URL = "https://hnd-rsv.aeif.or.jp/airport2/app/toppage"
-# 監視したい日付(月, 日)のリスト。テストのため7/22〜7/31を広く監視
-TARGET_DATES = [(7, d) for d in range(22, 32)]
+# 監視したい日付(月, 日)のリスト。
+TARGET_DATES = [(7, 26), (7, 27)]
 # P3(第2ターミナル)一般車枠のカレンダーのtable id
 TABLE_ID = "cal10"
 

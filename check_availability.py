@@ -7,12 +7,11 @@ ntfy.sh経由でスマホに通知するスクリプト。
   <table id="cal00"></table>  … P2 一般車枠
   <table id="cal10"></table>  … P3 一般車枠
 という空のtableにJavaScript(calendar.js/yoyaku_calendar.js)がAJAXで
-日付セルを描画する仕組みで、凡例のクラス名は
-  tx_ok       … 空車
-  tx_konzatsu … 混雑
-  tx_full     … 満車
-  tx_no       … 期間外
-となっている(ログイン後の予約ページのソースより確認)。
+日付セルを描画する仕組み。実際に確認できたクラス名は
+  full … 満車
+  (空) … 期間外・過去日
+空車・混雑の実際のクラス名は未確認だが、"full"でも空でもなければ
+予約可能とみなして判定する。
 この空車状況表示自体はトップページでもログイン不要で見られるため、
 このスクリプトはログインせずトップページのみを見に行く。
 
@@ -42,11 +41,12 @@ TARGET_DATES = [(7, 26), (7, 27)]
 # P3(第2ターミナル)一般車枠のカレンダーのtable id
 TABLE_ID = "cal10"
 
-DEBUG_DUMP_HTML = True  # Trueにするとカレンダーtableのinner HTMLを出力する
+DEBUG_DUMP_HTML = False  # Trueにするとカレンダーtableのinner HTMLを出力する
 
-# 空車・混雑・満車・期間外に対応するクラス名(サイトの凡例より判明済み)
-BOOKABLE_CLASSES = ["tx_ok", "tx_konzatsu"]  # 空車 or 混雑 = 予約可能
-UNAVAILABLE_CLASSES = ["tx_full", "tx_no"]   # 満車 or 期間外 = 予約不可
+# 実際のサイトで確認できたクラス名: 満車は class="full"。
+# 期間外・過去日は class=""(空)。空車・混雑の実際のクラス名はまだ未確認だが、
+# "full"でも空でもなければ予約可能な状態とみなす。
+FULL_CLASS = "full"
 
 # ntfy.shのトピック名。第三者に推測されないよう、ランダムな文字列を混ぜた
 # 名前にすることを推奨(トピック名を知っていれば誰でも購読・投稿できるため)
@@ -119,13 +119,13 @@ def find_day_status(page, table_id: str, day: int) -> str:
     if target_cell is None:
         return "unknown"  # 該当日が見つからない(月表示がズレている可能性)
 
-    class_name = target_cell.get_attribute("class") or ""
+    class_name = (target_cell.get_attribute("class") or "").strip()
 
-    if any(c in class_name for c in BOOKABLE_CLASSES):
-        return "bookable"
-    if any(c in class_name for c in UNAVAILABLE_CLASSES):
-        return "unavailable"
-    return "unknown"
+    if class_name == "":
+        return "unavailable"  # 期間外・過去日など
+    if FULL_CLASS in class_name:
+        return "unavailable"  # 満車
+    return "bookable"  # full でも空でもない = 空車 or 混雑 とみなす
 
 
 def main():

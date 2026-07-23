@@ -1,180 +1,131 @@
 """
-羽田空港P2・P3駐車場予約サイトの空き状況を監視し、
-指定日(デフォルト: 7/26, 7/27)にP3一般車枠の空きが出ていたら
-ntfy.sh経由でスマホに通知するスクリプト。
+羽田空港P3(第2ターミナル)一般車枠の空き状況を監視し、
+7/26・7/27のいずれかが「満車」「期間外」以外(=予約可能)になったら
+ntfy.sh経由でスマホに通知するスクリプト(requests版・GitHub Actions用)。
 
-サイトの実際のソースを確認したところ、カレンダーは
-  <table id="cal00"></table>  … P2 一般車枠
-  <table id="cal10"></table>  … P3 一般車枠
-という空のtableにJavaScript(calendar.js/yoyaku_calendar.js)がAJAXで
-日付セルを描画する仕組み。実際に確認できたクラス名は
-  full … 満車
-  (空) … 期間外・過去日
-空車・混雑の実際のクラス名は未確認だが、"full"でも空でもなければ
-予約可能とみなして判定する。
-この空車状況表示自体はトップページでもログイン不要で見られるため、
-このスクリプトはログインせずトップページのみを見に行く。
+サイトが内部で使っているJSON API(/airport2/app/calendar)を直接叩くので、
+Playwright(ブラウザ操作)は不要。
 
-【使い方】
-1. pip install playwright
-   playwright install chromium
-2. スマホに ntfy アプリ(iOS/Android)をインストールし、
-   NTFY_TOPIC で指定するトピック名を購読(Subscribe)しておく
-3. 環境変数を設定して実行
-   NTFY_TOPIC=haneda-p3-yourname123 python check_availability.py
-
-【判定がうまくいかない場合】
-DEBUG_DUMP_HTML を True にして実行すると、カレンダーtableの中身(HTML)を
-そのまま標準出力に表示します。それをClaudeに貼ってもらえれば、
-セル構造(日付の入れ方)に合わせて判定ロジックを調整できます。
+【前回の状態の保存について】
+GitHub Actionsは実行のたびに環境がまっさらになるため、前回チェック時の
+状態を state.json というファイルに書き出し、actions/cache で
+ワークフローの前後に保存・復元する(詳細はワークフローファイル側を参照)。
 """
 
+import json
 import os
+import re
 import sys
 import urllib.parse
-import urllib.request
-from playwright.sync_api import sync_playwright
 
-TARGET_URL = "https://hnd-rsv.aeif.or.jp/airport2/app/toppage"
-# 監視したい日付(月, 日)のリスト。
-TARGET_DATES = [(7, 26), (7, 27)]
-# P3(第2ターミナル)一般車枠のカレンダーのtable id
-TABLE_ID = "cal10"
+import requests
 
-DEBUG_DUMP_HTML = False  # Trueにするとカレンダーtableのinner HTMLを出力する
+TOP_URL = "https://hnd-rsv.aeif.or.jp/airport2/app/toppage"
+CALENDAR_API_URL = "https://hnd-rsv.aeif.or.jp/airport2/app/calendar"
 
-# 実際のサイトで確認できたクラス名: 満車は class="full"。
-# 期間外・過去日は class=""(空)。空車・混雑の実際のクラス名はまだ未確認だが、
-# "full"でも空でもなければ予約可能な状態とみなす。
-FULL_CLASS = "full"
+# P3(第2ターミナル)一般車枠 = area:1, handicapped:0 (サイトのHTML構造・実測から確認済み)
+AREA = "1"
+HANDICAPPED = "0"
 
-# ntfy.shのトピック名。第三者に推測されないよう、ランダムな文字列を混ぜた
-# 名前にすることを推奨(トピック名を知っていれば誰でも購読・投稿できるため)
+# 監視したい日付(2桁の文字列。1桁の日付を含める場合は "01" のようにゼロ埋めすること)
+TARGET_DAYS = ["26", "27"]
+
+STATE_FILE = "state.json"
+
 NTFY_TOPIC = os.environ.get("NTFY_TOPIC")
 NTFY_SERVER = os.environ.get("NTFY_SERVER", "https://ntfy.sh")
 
 
+def fetch_calendar_status():
+    session = requests.Session()
+    top_res = session.get(TOP_URL, timeout=20)
+    top_res.raise_for_status()
+
+    m = re.search(r'id="token_header_token">([^<]+)<', top_res.text)
+    if not m:
+        print("CSRFトークンが取得できませんでした。サイトの構造が変わった可能性があります。")
+        sys.exit(1)
+    csrf_token = m.group(1)
+
+    payload = {"date": "", "area": AREA, "handicapped": HANDICAPPED}
+    cal_res = session.post(
+        CALENDAR_API_URL,
+        json=payload,
+        headers={
+            "X-CSRF-TOKEN": csrf_token,
+            "X-Requested-With": "XMLHttpRequest",
+            "Referer": TOP_URL,
+        },
+        timeout=20,
+    )
+    cal_res.raise_for_status()
+    return cal_res.json()
+
+
 def send_ntfy_message(text: str, title: str = "羽田空港P3駐車場") -> None:
-    """ntfy.sh経由で通知を送る"""
     if not NTFY_TOPIC:
         print("NTFY_TOPIC が未設定です。通知をスキップします。")
         print("送信予定メッセージ:", text)
         return
 
-    # 日本語をHTTPヘッダーにそのまま入れるとエラーになるため、
-    # title/priority/tagsはクエリパラメータで渡す(ntfyはこの方式に対応)
-    params = urllib.parse.urlencode({
-        "title": title,
-        "priority": "high",
-        "tags": "car",
-    })
+    params = urllib.parse.urlencode({"title": title, "priority": "high", "tags": "car"})
     url = f"{NTFY_SERVER}/{NTFY_TOPIC}?{params}"
-    req = urllib.request.Request(
-        url,
-        data=text.encode("utf-8"),
-        method="POST",
-    )
-    with urllib.request.urlopen(req) as res:
-        print("ntfy通知送信結果:", res.status)
+    res = requests.post(url, data=text.encode("utf-8"), timeout=20)
+    print("ntfy通知送信結果:", res.status_code)
 
 
-def find_day_status(page, table_id: str, day: int) -> str:
-    """
-    指定したtable(P2=cal00 / P3=cal10)・日にちのセル状態を返す。
-    戻り値: "bookable"(空車or混雑=予約可能) / "unavailable"(満車or期間外) / "unknown"
-    """
-    table_selector = f"table#{table_id}"
+def load_previous_state():
+    if os.path.exists(STATE_FILE):
+        with open(STATE_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return {"last_bookable_days": []}
 
-    # AJAXでの描画完了を待つ(td要素が現れるまで)
-    page.wait_for_selector(f"{table_selector} td", timeout=20000)
 
-    # 日付セルはまず番号だけで描画され、空車/混雑/満車の色付け(class付与)は
-    # 少し遅れて別処理で行われるようなので、いずれかのtdにclassが付くまで待つ
-    try:
-        page.wait_for_function(
-            """(sel) => {
-                const cells = document.querySelectorAll(sel + ' td');
-                return Array.from(cells).some(td => td.className && td.className.trim() !== '');
-            }""",
-            arg=table_selector,
-            timeout=20000,
-        )
-    except Exception:
-        pass  # タイムアウトしても、この後の処理で unknown 判定になるだけなので続行する
-
-    # 日にちの数字がテキストに含まれるtdを探す(前後に余分な要素があってもよいよう
-    # normalize-spaceで完全一致 or 先頭一致を試す)
-    cells = page.locator(f"{table_selector} td")
-    count = cells.count()
-    target_cell = None
-    for i in range(count):
-        cell = cells.nth(i)
-        text = (cell.inner_text() or "").strip()
-        # セル内テキストの先頭行が日にちの数字と一致するかチェック
-        first_line = text.splitlines()[0].strip() if text else ""
-        if first_line == str(day):
-            target_cell = cell
-            break
-
-    if target_cell is None:
-        return "unknown"  # 該当日が見つからない(月表示がズレている可能性)
-
-    class_name = (target_cell.get_attribute("class") or "").strip()
-
-    if class_name == "":
-        return "unavailable"  # 期間外・過去日など
-    if FULL_CLASS in class_name:
-        return "unavailable"  # 満車
-    return "bookable"  # full でも空でもない = 空車 or 混雑 とみなす
+def save_state(state):
+    with open(STATE_FILE, "w", encoding="utf-8") as f:
+        json.dump(state, f, ensure_ascii=False)
 
 
 def main():
-    with sync_playwright() as p:
-        browser = p.chromium.launch()
-        page = browser.new_page()
-        page.goto(TARGET_URL, wait_until="networkidle")
+    data = fetch_calendar_status()
+    month_prefix = data.get("date")  # 例: "2026/07"
+    calendar = data.get("yoyakuCalendar", [])
 
-        # 色付け(class付与)が非同期で遅れて行われるようなので、少し待つ
-        try:
-            page.wait_for_function(
-                """(sel) => {
-                    const cells = document.querySelectorAll(sel + ' td');
-                    return Array.from(cells).some(td => td.className && td.className.trim() !== '');
-                }""",
-                arg=f"table#{TABLE_ID}",
-                timeout=20000,
-            )
-        except Exception:
-            print("警告: classが付与されるのを待ちましたがタイムアウトしました。")
+    bookable_days = []
+    unknown_days = []
 
-        if DEBUG_DUMP_HTML:
-            table = page.locator(f"table#{TABLE_ID}")
-            print(f"--- table#{TABLE_ID} innerHTML ---")
-            print(table.inner_html())
-            print("--- end ---")
+    for day in TARGET_DAYS:
+        padded_day = day.zfill(2)
+        target_date = f"{month_prefix}/{padded_day}"
+        # 「日にちの数字」だけでなく年月を含めた完全一致で照合する
+        # (前月・翌月にも同じ日にちの数字が重複して登場するため)
+        entry = next((e for e in calendar if e.get("date") == target_date), None)
 
-        results = []
-        for month, day in TARGET_DATES:
-            status = find_day_status(page, TABLE_ID, day)
-            results.append((month, day, status))
-            print(f"{month}/{day}: {status}")
+        if entry is None:
+            unknown_days.append(day)
+            continue
 
-        browser.close()
+        status = entry.get("status", "")
+        print(f"{day}日: status={status!r}")
 
-        bookable_days = [f"{m}/{d}" for m, d, s in results if s == "bookable"]
-        unknown_days = [f"{m}/{d}" for m, d, s in results if s == "unknown"]
+        if status not in ("", "full"):
+            bookable_days.append(f"{day}日({status})")
 
-        if unknown_days:
-            print(
-                f"判定不明の日付があります: {', '.join(unknown_days)}。"
-                " DEBUG_DUMP_HTML=True で実行し、出力されたHTMLをClaudeに共有してください。"
-            )
+    if unknown_days:
+        print(f"該当日が見つかりませんでした(月表示がズレている可能性): {', '.join(unknown_days)}")
 
+    prev_state = load_previous_state()
+    prev_bookable = prev_state.get("last_bookable_days", [])
+
+    if bookable_days != prev_bookable:
         if bookable_days:
-            msg = f"羽田空港P3駐車場: {', '.join(bookable_days)} に空きが出ています!\n{TARGET_URL}"
+            msg = f"羽田空港P3駐車場: {', '.join(bookable_days)} に空きが出ています!\n{TOP_URL}"
             send_ntfy_message(msg)
         else:
-            print("空きなし。通知は送信しません。")
+            print(f"空きが無くなりました(前回: {prev_bookable})。通知はしません。")
+        save_state({"last_bookable_days": bookable_days})
+    else:
+        print(f"前回チェック時と状態が同じなので通知はスキップします。現在: {bookable_days}")
 
 
 if __name__ == "__main__":

@@ -2,8 +2,6 @@ name: Check Haneda P3 Parking Availability
 
 on:
   schedule:
-    # UTC基準。JSTの5:00-23:00の間、15分おきに実行する例(UTC 20:00-14:00)
-    # cronの書式に慣れていない場合は https://crontab.guru/ が便利です
     - cron: "*/5 * * * *"
   workflow_dispatch: {}  # 手動実行もできるようにしておく
 
@@ -18,9 +16,20 @@ jobs:
           python-version: "3.12"
 
       - name: Install dependencies
-        run: |
-          pip install playwright
-          playwright install --with-deps chromium
+        run: pip install requests
+
+      # 前回チェック時の状態(state.json)をキャッシュから復元する。
+      # keyにgithub.run_id(実行のたびに変わる値)を含めることで、
+      # 「厳密一致は必ず外れる→restore-keysで直近のキャッシュを復元する→
+      #  ジョブ終了時に新しいkeyで自動的に保存される」という、
+      # GitHub Actionsで状態を引き継ぐ定番のやり方。
+      - name: Restore previous state
+        uses: actions/cache@v4
+        with:
+          path: state.json
+          key: haneda-state-${{ github.run_id }}
+          restore-keys: |
+            haneda-state-
 
       - name: Run check
         env:

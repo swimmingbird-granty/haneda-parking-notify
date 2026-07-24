@@ -1,0 +1,22 @@
+name: Notify via ntfy (triggered by GAS)
+
+# GASが空きを検知した時だけ、GitHub APIのrepository_dispatchで呼び出される。
+# schedule(cron)は使わないので、GitHub Actionsの「定期実行が来ない」問題を回避できる。
+on:
+  repository_dispatch:
+    types: [haneda-p3-available]
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send ntfy notification
+        env:
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          MESSAGE: ${{ github.event.client_payload.message }}
+        run: |
+          curl -sS -X POST "https://ntfy.sh/${NTFY_TOPIC}" \
+            -H "Title: Haneda P3 Parking" \
+            -H "Priority: high" \
+            -H "Tags: car" \
+            -d "${MESSAGE}"
